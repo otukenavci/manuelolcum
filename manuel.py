@@ -2,6 +2,7 @@ import streamlit as st
 import random
 import os
 import re
+import datetime
 from copy import deepcopy
 from io import BytesIO
 from docxtpl import DocxTemplate
@@ -65,8 +66,7 @@ st.sidebar.header("📋 Belge Üst Bilgileri")
 
 numune_sayisi = st.sidebar.number_input("Numune (Satır) Sayısı:", min_value=1, value=10)
 siparis = st.sidebar.text_input("Sipariş No (Envanter):")
-tarih = st.sidebar.text_input("Tarih:", datetime.date.today().strftime("%d.%m.%Y")) if 'datetime' in globals() else st.sidebar.text_input("Tarih:")
-# Not: datetime importu eksikse hata vermemesi için basit tuttum
+tarih = st.sidebar.text_input("Tarih:", datetime.date.today().strftime("%d.%m.%Y"))
 m_no = st.sidebar.text_input("Malzeme No:")
 m_adi = st.sidebar.text_input("Malzeme Açıklaması:")
 g_mik = st.sidebar.text_input("Gelen Miktar:")
@@ -130,11 +130,31 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
                         hucre_yaz(h[v_idx], "GO")
                     else:
                         try:
-                            n = float(a['n'].replace(',','.'))
-                            ust = n + float(a['ta'].replace(',','.'))
-                            e_s = str(a['te']).replace(',','.')
+                            n_str = str(a['n']).replace(',', '.')
+                            ta_str = str(a['ta']).replace(',', '.')
+                            te_str = str(a['te']).replace(',', '.')
+                            
+                            # Girilen tolerans değerlerindeki virgülden sonraki basamak sayısını hesaplıyoruz
+                            def basamak_sayisi(metin):
+                                return len(metin.split('.')[1]) if '.' in metin else 0
+                                
+                            # + ve - toleranslardan hangisinin hassasiyeti (basamak sayısı) daha yüksekse onu baz al
+                            hassasiyet = max(basamak_sayisi(ta_str), basamak_sayisi(te_str))
+                            
+                            # Eğer toleranslar tam sayı girilmişse varsayılan olarak kumpas hassasiyeti (2 basamak) kalsın
+                            if hassasiyet == 0: 
+                                hassasiyet = 2 
+
+                            n = float(n_str)
+                            ust = n + float(ta_str)
+                            e_s = te_str
                             alt = n + float(e_s) if e_s.startswith('+') else n - float(e_s or 0)
-                            hucre_yaz(h[v_idx], round(random.uniform(alt, ust), 2))
+                            
+                            # Rastgele değeri üret ve dinamik hassasiyete göre formatla (örn: hassasiyet 3 ise 5.120 yazar)
+                            uretilen_deger = random.uniform(alt, ust)
+                            formatli_deger = f"{uretilen_deger:.{hassasiyet}f}"
+                            
+                            hucre_yaz(h[v_idx], formatli_deger)
                         except: hucre_yaz(h[v_idx], "GO")
                     hucre_yaz(h[r_idx], "OK")
                 elif v_idx < len(h):
