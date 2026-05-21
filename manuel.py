@@ -29,7 +29,7 @@ def cihaz_kaydet(yeni_cihaz):
             try:
                 with open(CIHAZ_DOSYASI, "a", encoding="utf-8") as f:
                     f.write(yeni_cihaz.strip() + "\n")
-            except: pass # Bulutta dosya yazma bazen kısıtlıdır, hata vermesin
+            except: pass 
 
 def hucre_yaz(hucre, metin):
     hucre.text = str(metin)
@@ -113,16 +113,25 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
         tpl.save(out_tmp)
         doc = Document(BytesIO(out_tmp.getvalue()))
         tablo = doc.tables[0]
-        ornek_satir_xml = tablo.rows[8]._tr
+        
+        # SATIR KONTROLÜ: Şablonda en az 9 satır yoksa çökmeyi önler
+        ornek_index = min(8, len(tablo.rows) - 1)
+        ornek_satir_xml = tablo.rows[ornek_index]._tr
 
         for s in range(numune_sayisi):
-            if s < 10: row = tablo.rows[8 + s]
+            hedef_satir = 8 + s
+            if s < 10 and hedef_satir < len(tablo.rows): 
+                row = tablo.rows[hedef_satir]
             else:
                 yeni_tr = deepcopy(ornek_satir_xml)
-                tablo.rows[8 + s]._tr.addprevious(yeni_tr)
-                row = tablo.rows[8 + s]
+                tablo.rows[-1]._tr.addnext(yeni_tr)
+                row = tablo.rows[-1]
+                
             h = benzersiz_hucreler(row)
-            hucre_yaz(h[0], str(s+1)); hucre_yaz(h[1], f"{s+1:02d}")
+            
+            if len(h) > 0: hucre_yaz(h[0], str(s+1))
+            if len(h) > 1: hucre_yaz(h[1], f"{s+1:02d}")
+            
             for i, a in enumerate(ayarlar):
                 v_idx, r_idx = 2+(i*2), 3+(i*2)
                 if a['aktif'] and v_idx < len(h):
@@ -134,35 +143,39 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
                             ta_str = str(a['ta']).replace(',', '.')
                             te_str = str(a['te']).replace(',', '.')
                             
-                            # Girilen tolerans değerlerindeki virgülden sonraki basamak sayısını hesaplıyoruz
                             def basamak_sayisi(metin):
                                 return len(metin.split('.')[1]) if '.' in metin else 0
                                 
-                            # + ve - toleranslardan hangisinin hassasiyeti (basamak sayısı) daha yüksekse onu baz al
                             hassasiyet = max(basamak_sayisi(ta_str), basamak_sayisi(te_str))
-                            
-                            # Eğer toleranslar tam sayı girilmişse varsayılan olarak kumpas hassasiyeti (2 basamak) kalsın
-                            if hassasiyet == 0: 
-                                hassasiyet = 2 
+                            if hassasiyet == 0: hassasiyet = 2 
 
                             n = float(n_str)
                             ust = n + float(ta_str)
                             e_s = te_str
                             alt = n + float(e_s) if e_s.startswith('+') else n - float(e_s or 0)
                             
-                            # Rastgele değeri üret ve dinamik hassasiyete göre formatla (örn: hassasiyet 3 ise 5.120 yazar)
                             uretilen_deger = random.uniform(alt, ust)
                             formatli_deger = f"{uretilen_deger:.{hassasiyet}f}"
                             
                             hucre_yaz(h[v_idx], formatli_deger)
-                        except: hucre_yaz(h[v_idx], "GO")
-                    hucre_yaz(h[r_idx], "OK")
+                        except: 
+                            hucre_yaz(h[v_idx], "GO")
+                            
+                    # HÜCRE KONTROLÜ: r_idx ("OK") sınır dışına taşıyor mu?
+                    if r_idx < len(h):
+                        hucre_yaz(h[r_idx], "OK")
+                        
                 elif v_idx < len(h):
-                    hucre_yaz(h[v_idx], ""); hucre_yaz(h[r_idx], "")
+                    hucre_yaz(h[v_idx], "")
+                    if r_idx < len(h):
+                        hucre_yaz(h[r_idx], "")
 
         if numune_sayisi < 10:
             for s in range(numune_sayisi, 10):
-                for cell in benzersiz_hucreler(tablo.rows[8+s]): hucre_yaz(cell, "")
+                bos_satir = 8 + s
+                if bos_satir < len(tablo.rows):
+                    for cell in benzersiz_hucreler(tablo.rows[bos_satir]): 
+                        hucre_yaz(cell, "")
 
         # --- İNDİRME SİSTEMİ ---
         final_out = BytesIO()
@@ -178,4 +191,5 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
         )
 
     except Exception as e:
-        st.error(f"Hata: {e}")
+        import traceback
+        st.error(f"Hata Detayı:\n{traceback.format_exc()}")
