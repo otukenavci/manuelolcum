@@ -1,10 +1,11 @@
 import streamlit as st
 import random
 import os
+from datetime import datetime
 from io import BytesIO
 from docxtpl import DocxTemplate
 
-# 1. CİHAZ LİSTESİ YÖNETİMİ
+# Cihaz Listesi Yönetimi
 def cihazlari_yukle():
     if os.path.exists("cihazlar.txt"):
         with open("cihazlar.txt", "r", encoding="utf-8") as f:
@@ -31,10 +32,10 @@ with st.sidebar:
 # Ana Panel: Ölçüm Noktaları
 st.header("📏 Ölçüm Noktası Girişleri")
 
-# Sadece içi doldurulan satırların toplanacağı dinamik liste
-kabul_edilen_olcumler = []
+# Form verilerini toplamak için sözlük yapısı
+panel_verileri = {}
 
-# 1'den 9'a kadar olan panelleri ekrana basıyoruz
+# 1'den 9'a kadar olan panelleri oluşturuyoruz
 for i in range(1, 10):
     with st.expander(f"🔹 Ölçüm Noktası {i}", expanded=(i in [2, 3])):
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -54,55 +55,69 @@ for i in range(1, 10):
             else:
                 cihaz_secimi = st.selectbox(f"Cihaz Seç", mevcut_cihazlar, key=f"cihaz_{i}")
         
-        # 🎯 KRİTİK KURAL: Sadece balon numarası yazılmışsa listeye kabul et!
+        # Sadece Balon No girildiyse veriyi kaydet
         if balon_no:
-            kabul_edilen_olcumler.append({
+            panel_verileri[i] = {
                 "balon": balon_no,
                 "nominal": nominal,
                 "tol_plus": tol_plus,
                 "tol_minus": tol_minus,
                 "cihaz": cihaz_secimi,
                 "is_master": is_master
-            })
+            }
 
 # --- DEĞER ÜRETME VE FORMU OLUŞTURMA ---
 if st.button("🚀 FORMU OLUŞTUR", type="primary"):
     try:
-        # Üst bilgileri içeren ana sözlük
+        # Word şablonundaki üst bilgilerle birebir eşleme
         context = {
+            "envanter_no": "",
+            "tarih": datetime.now().strftime("%d.%m.%Y"),
             "malzeme_no": malzeme_no,
-            "malzeme_aciklamasi": malzeme_aciklamasi,
-            "gelen_miktar": gelen_miktar,
+            "malzeme_adi": malzeme_aciklamasi,  # Şablonundaki {{malzeme_adi}}
+            "genel_miktar": gelen_miktar,       # Şablonundaki {{genel_miktar}}
             "kontrol_miktari": kontrol_miktari,
             "uygun_miktar": uygun_miktar,
             "kontrol_eden": kontrol_eden,
-            "onaylayan": onaylayan,
-            "olcumler": [] # Word şablonundaki {% for o in olcumler %} döngüsü için temiz liste
+            "onaylayan": onaylayan
         }
         
-        # ❌ INDEX ERROR'U ENGELLEYEN YAPI:
-        # Sabit indeks (0,1,2..) yerine sadece "kabul_edilen_olcumler" listesinde ne varsa onun üzerinde dönüyoruz
-        for sira_no, girdi in enumerate(kabul_edilen_olcumler, start=1):
-            satir_verisi = {
-                "sira": sira_no,
-                "balon": girdi["balon"],
-                "nominal": girdi["nominal"],
-                "tol_p": girdi["tol_plus"],
-                "tol_m": girdi["tol_minus"],
-                "cihaz": girdi["cihaz"]
-            }
+        # Şablondaki tüm olası hücreleri (9 sütun x 10 satır) başlangıçta boşaltıyoruz
+        for i in range(1, 10):
+            context[f"balonno{i}"] = ""
+            context[f"nom{i}"] = ""
+            context[f"tolarti{i}"] = ""
+            context[f"toleksi{i}"] = ""
+            context[f"cihaz{i}"] = ""
+            for j in range(1, 11):
+                context[f"o_{i}_{j}"] = ""
+                context[f"s_{i}_{j}"] = ""
+        
+        # Numune sıra numaralarını (1-10) yazdırıyoruz
+        for j in range(1, 11):
+            context[f"serino{j}"] = str(j) if j <= int(kontrol_miktari) else ""
+
+        # Sadece kullanıcının doldurduğu ölçüm noktalarını matrise yerleştiriyoruz
+        for i, girdi in panel_verileri.items():
+            context[f"balonno{i}"] = girdi["balon"]
+            context[f"nom{i}"] = girdi["nominal"]
+            context[f"tolarti{i}"] = girdi["tol_plus"]
+            context[f"toleksi{i}"] = girdi["tol_minus"]
+            context[f"cihaz{i}"] = girdi["cihaz"]
             
-            # Seçilen kontrol miktarı kadar rastgele değer üretip satıra ekle
-            for j in range(1, int(kontrol_miktari) + 1):
+            # Kontrol miktarı kadar (en fazla 10 satır) rastgele değer üretimi
+            sinir_miktari = min(int(kontrol_miktari), 10)
+            for j in range(1, sinir_miktari + 1):
                 if girdi["is_master"]:
-                    satir_verisi[f"olcum_{j}"] = "UYGUN"
+                    context[f"o_{i}_{j}"] = "UYGUN"
+                    context[f"s_{i}_{j}"] = "UYGUN"
                 else:
                     try:
                         nom_f = float(girdi["nominal"])
                         tp_f = float(girdi["tol_plus"]) if girdi["tol_plus"] else 0.0
                         tm_f = float(girdi["tol_minus"]) if girdi["tol_minus"] else 0.0
                         
-                        # Basamak hassasiyeti ayarı
+                        # Hassasiyet basamağını hesapla
                         dec_places = max(
                             len(str(girdi["nominal"]).split('.')[1]) if '.' in str(girdi["nominal"]) else 0,
                             len(str(girdi["tol_plus"]).split('.')[1]) if '.' in str(girdi["tol_plus"]) else 0,
@@ -111,23 +126,23 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
                         dec_places = max(dec_places, 2)
                         
                         rastgele_deger = random.uniform(nom_f - tm_f, nom_f + tp_f)
-                        satir_verisi[f"olcum_{j}"] = f"{rastgele_deger:.{dec_places}f}"
+                        context[f"o_{i}_{j}"] = f"{rastgele_deger:.{dec_places}f}"
+                        context[f"s_{i}_{j}"] = "UYGUN"
                     except ValueError:
-                        satir_verisi[f"olcum_{j}"] = girdi["nominal"]
-            
-            # Sadece bu geçerli satırı listeye ekle
-            context["olcumler"].append(satir_verisi)
+                        context[f"o_{i}_{j}"] = girdi["nominal"]
+                        context[f"s_{i}_{j}"] = "UYGUN"
 
-        # Şablonu İşleme
-        if os.path.exists("sablon.docx"):
-            doc = DocxTemplate("sablon.docx")
+        # Şablon adını kontrol edip yüklüyoruz
+        dosya_adi = "manuel.docx"
+        if os.path.exists(dosya_adi):
+            doc = DocxTemplate(dosya_adi)
             doc.render(context)
             
             output = BytesIO()
             doc.save(output)
             output.seek(0)
             
-            st.success(f"🎉 Rapor başarıyla hazırlandı! Toplam {len(kabul_edilen_olcumler)} ölçüm noktası işlendi.")
+            st.success("🎉 Rapor başarıyla dolduruldu!")
             st.download_button(
                 label="📄 Raporu İndir (.docx)",
                 data=output,
@@ -135,7 +150,7 @@ if st.button("🚀 FORMU OLUŞTUR", type="primary"):
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
         else:
-            st.error("Hata: 'sablon.docx' dosyası bulunamadı. Lütfen GitHub deponuza şablonu ekleyin.")
+            st.error(f"Hata: GitHub deponuzda '{dosya_adi}' dosyası bulunamadı.")
             
     except Exception as e:
-        st.error(f"Hata detayı: {e}")
+        st.error(f"Sistem Hatası: {e}")
