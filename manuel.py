@@ -1,156 +1,181 @@
 import streamlit as st
 import random
 import os
-from datetime import datetime
+import re
+import datetime
+from copy import deepcopy
 from io import BytesIO
 from docxtpl import DocxTemplate
+from docx import Document
+from docx.shared import Pt
 
-# Cihaz Listesi Yönetimi
+# --- AYARLAR VE HAFIZA SİSTEMİ ---
+SABLON_YOLU = "manuel.docx"  # Klasördeki dosya adı
+CIHAZ_DOSYASI = "cihazlar.txt"
+
+# BULUT İÇİN: Masaüstü yolunu sildik, Streamlit hafızasını kullanacağız.
+
 def cihazlari_yukle():
-    if os.path.exists("cihazlar.txt"):
-        with open("cihazlar.txt", "r", encoding="utf-8") as f:
-            return [line.strip() for line in f.readlines() if line.strip()]
-    return ["DFA - 0469 KUMPAS", "DFA - 0001 MİKROMETRE", "DFA - 0002 RADYUS MASTAR"]
+    varsayilan = ["DFA – 0469 KUMPAS", "DFA – 3262 MİHENGİR", "M3 DİŞ MASTARI", "M5 DİŞ MASTARI"]
+    if os.path.exists(CIHAZ_DOSYASI):
+        with open(CIHAZ_DOSYASI, "r", encoding="utf-8") as f:
+            return sorted(list(set(varsayilan + [line.strip() for line in f.readlines() if line.strip()])))
+    return sorted(varsayilan)
 
-mevcut_cihazlar = cihazlari_yukle()
+def cihaz_kaydet(yeni_cihaz):
+    if yeni_cihaz and yeni_cihaz != "Yeni Cihaz Ekle...":
+        mevcut = cihazlari_yukle()
+        if yeni_cihaz not in mevcut:
+            try:
+                with open(CIHAZ_DOSYASI, "a", encoding="utf-8") as f:
+                    f.write(yeni_cihaz.strip() + "\n")
+            except: pass # Bulutta dosya yazma bazen kısıtlıdır, hata vermesin
 
-# --- ARABİRİM TASARIMI ---
+def hucre_yaz(hucre, metin):
+    hucre.text = str(metin)
+    if hucre.paragraphs:
+        p = hucre.paragraphs[0]
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        if p.runs:
+            p.runs[0].font.name = 'Calibri Light'
+            p.runs[0].font.size = Pt(9)
+
+def benzersiz_hucreler(satir):
+    res = []
+    for c in satir.cells:
+        if c not in res: res.append(c)
+    return res
+
+def parametre_tetikleyici(i):
+    n_key, c_key, ta_key, te_key = f"n_{i}", f"c_box_{i}", f"ta_{i}", f"te_{i}"
+    if n_key in st.session_state:
+        v = st.session_state[n_key].upper().strip()
+        if any(x in v for x in ["DİŞ", "DIS", "HELI", "METRİK", "METRIK"]) or (v.startswith('M') and any(c.isdigit() for c in v)):
+            match = re.search(r'\d+', v)
+            m_num = match.group() if match else ""
+            if m_num:
+                tahmin = f"M{m_num} HELICOIL DİŞ MASTARI" if "HELI" in v else f"M{m_num} DİŞ MASTARI"
+                st.session_state[c_key] = tahmin
+                st.session_state[ta_key] = "GO"
+                st.session_state[te_key] = "NO GO"
+
+# --- ARAYÜZ ---
 st.set_page_config(page_title="Teknolus Manuel Ölçü Paneli", layout="wide")
-st.title("🔧 Teknolus Manuel Ölçü Paneli")
+st.sidebar.header("📋 Belge Üst Bilgileri")
 
-# Sol Panel: Üst Veriler
-with st.sidebar:
-    st.header("📋 Malzeme & Kontrol Bilgileri")
-    malzeme_no = st.text_input("Malzeme No:", value="0004017.0000")
-    malzeme_aciklamasi = st.text_input("Malzeme Açıklaması:", value="BLM1800-Bearing Washer")
-    gelen_miktar = st.number_input("Gelen Miktar:", value=125, step=1)
-    kontrol_miktari = st.number_input("Kontrol Miktarı:", value=15, step=1)
-    uygun_miktar = st.number_input("Uygun Miktar:", value=15, step=1)
-    kontrol_eden = st.text_input("Kontrol Eden:", value="Ötuken Avcı")
-    onaylayan = st.text_input("Onaylayan:", value="Ötuken Avcı")
+numune_sayisi = st.sidebar.number_input("Numune (Satır) Sayısı:", min_value=1, value=10)
+siparis = st.sidebar.text_input("Sipariş No (Envanter):")
+tarih = st.sidebar.text_input("Tarih:", datetime.date.today().strftime("%d.%m.%Y"))
+m_no = st.sidebar.text_input("Malzeme No:")
+m_adi = st.sidebar.text_input("Malzeme Açıklaması:")
+g_mik = st.sidebar.text_input("Gelen Miktar:")
+k_mik = st.sidebar.text_input("Kontrol Miktarı:", value=str(numune_sayisi))
+u_mik = st.sidebar.text_input("Uygun Miktar:", value=str(numune_sayisi))
+k_eden = st.sidebar.text_input("Kontrol Eden:")
+onay = st.sidebar.text_input("Onaylayan:")
 
-# Ana Panel: Ölçüm Noktaları
-st.header("📏 Ölçüm Noktası Girişleri")
+st.subheader("📏 Manuel Ölçüm Parametreleri")
+ayarlar = []
+mevcut_list = cihazlari_yukle() + ["Yeni Cihaz Ekle..."]
 
-# Form verilerini toplamak için sözlük yapısı
-panel_verileri = {}
-
-# 1'den 9'a kadar olan panelleri oluşturuyoruz
 for i in range(1, 10):
-    with st.expander(f"🔹 Ölçüm Noktası {i}", expanded=(i in [2, 3])):
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            balon_no = st.text_input(f"Balon No", key=f"balon_{i}", value=str(i) if i in [2,3] else "").strip()
-        with col2:
-            nominal = st.text_input(f"Nominal", key=f"nominal_{i}", value="10" if i==2 else ("0.5" if i==3 else ""))
-        with col3:
-            tol_plus = st.text_input(f"Tol(+)", key=f"tol_p_{i}", value="0.03" if i==2 else ("0.1" if i==3 else ""))
-        with col4:
-            tol_minus = st.text_input(f"Tol(-)", key=f"tol_m_{i}", value="0.03" if i==2 else ("0.1" if i==3 else ""))
-        with col5:
-            is_master = any(x in str(nominal).upper() for x in ["GÖ", "GEÇER", "MASTAR", "HELICOIL", "GO"])
-            if is_master:
-                cihaz_secimi = st.selectbox(f"Cihaz Seç", ["VİDA DİŞ MASTARI", "GEÇER/GEÇMEZ MASTAR"], key=f"cihaz_{i}")
-            else:
-                cihaz_secimi = st.selectbox(f"Cihaz Seç", mevcut_cihazlar, key=f"cihaz_{i}")
-        
-        # Sadece Balon No girildiyse veriyi kaydet
-        if balon_no:
-            panel_verileri[i] = {
-                "balon": balon_no,
-                "nominal": nominal,
-                "tol_plus": tol_plus,
-                "tol_minus": tol_minus,
-                "cihaz": cihaz_secimi,
-                "is_master": is_master
-            }
+    with st.expander(f"Ölçüm Noktası {i}", expanded=(i<=3)):
+        c1, c2, c3, c4, c5, c6 = st.columns([0.8, 1.2, 1, 1, 2.5, 1.5])
+        b_no = c1.text_input("Balon No", key=f"b_{i}") 
+        nom = c2.text_input("Nominal", key=f"n_{i}", on_change=parametre_tetikleyici, args=(i,))
+        ta = c3.text_input("Tol(+)", key=f"ta_{i}")
+        te = c4.text_input("Tol(-)", key=f"te_{i}")
+        c_sec = c5.selectbox("Cihaz Seç", mevcut_list, key=f"c_box_{i}")
+        f_cihaz = c_sec
+        if c_sec == "Yeni Cihaz Ekle...":
+            f_cihaz = c6.text_input("Cihaz Adı:", key=f"c_man_{i}")
+        ayarlar.append({'b': b_no, 'n': nom, 'ta': ta, 'te': te, 'c': f_cihaz, 'aktif': bool(b_no.strip())})
 
-# --- DEĞER ÜRETME VE FORMU OLUŞTURMA ---
 if st.button("🚀 FORMU OLUŞTUR", type="primary"):
     try:
-        # Word şablonundaki üst bilgilerle birebir eşleme
-        context = {
-            "envanter_no": "",
-            "tarih": datetime.now().strftime("%d.%m.%Y"),
-            "malzeme_no": malzeme_no,
-            "malzeme_adi": malzeme_aciklamasi,  # Şablonundaki {{malzeme_adi}}
-            "genel_miktar": gelen_miktar,       # Şablonundaki {{genel_miktar}}
-            "kontrol_miktari": kontrol_miktari,
-            "uygun_miktar": uygun_miktar,
-            "kontrol_eden": kontrol_eden,
-            "onaylayan": onaylayan
+        tpl = DocxTemplate(SABLON_YOLU)
+        ctx = {
+            'envanter_no': siparis, 'tarih': tarih, 'malzeme_no': m_no, 'malzeme_adi': m_adi,
+            'genel_miktar': g_mik, 'kontrol_miktari': k_mik, 'uygun_miktar': u_mik,
+            'kontrol_eden': k_eden, 'onaylayan': onay
         }
         
-        # Şablondaki tüm olası hücreleri (9 sütun x 10 satır) başlangıçta boşaltıyoruz
-        for i in range(1, 10):
-            context[f"balonno{i}"] = ""
-            context[f"nom{i}"] = ""
-            context[f"tolarti{i}"] = ""
-            context[f"toleksi{i}"] = ""
-            context[f"cihaz{i}"] = ""
-            for j in range(1, 11):
-                context[f"o_{i}_{j}"] = ""
-                context[f"s_{i}_{j}"] = ""
+        for i, a in enumerate(ayarlar, 1):
+            if a['aktif']:
+                ctx.update({f'balonno{i}': a['b'], f'nom{i}': a['n'], f'tolarti{i}': a['ta'], f'toleksi{i}': a['te']})
+                ctx[f'cihaz{i if i > 1 else 2}'] = a['c']
+            else:
+                ctx.update({f'balonno{i}': '', f'nom{i}': '', f'tolarti{i}': '', f'toleksi{i}': '', f'cihaz{i if i > 1 else 2}': ''})
+
+        tpl.render(ctx)
+        out_tmp = BytesIO()
+        tpl.save(out_tmp)
+        doc = Document(BytesIO(out_tmp.getvalue()))
+        tablo = doc.tables[0]
+        ornek_satir_xml = tablo.rows[8]._tr
+
+        for s in range(numune_sayisi):
+            if s < 10: row = tablo.rows[8 + s]
+            else:
+                yeni_tr = deepcopy(ornek_satir_xml)
+                tablo.rows[8 + s]._tr.addprevious(yeni_tr)
+                row = tablo.rows[8 + s]
+            h = benzersiz_hucreler(row)
+            hucre_yaz(h[0], str(s+1)); hucre_yaz(h[1], f"{s+1:02d}")
+            for i, a in enumerate(ayarlar):
+                v_idx, r_idx = 2+(i*2), 3+(i*2)
+                if a['aktif'] and v_idx < len(h):
+                    if "GO" in str(a['ta']).upper() or any(x in str(a['c']).upper() for x in ["DİŞ", "HELI"]):
+                        hucre_yaz(h[v_idx], "GO")
+                    else:
+                        try:
+                            n_str = str(a['n']).replace(',', '.')
+                            ta_str = str(a['ta']).replace(',', '.')
+                            te_str = str(a['te']).replace(',', '.')
+                            
+                            # Girilen tolerans değerlerindeki virgülden sonraki basamak sayısını hesaplıyoruz
+                            def basamak_sayisi(metin):
+                                return len(metin.split('.')[1]) if '.' in metin else 0
+                                
+                            # + ve - toleranslardan hangisinin hassasiyeti (basamak sayısı) daha yüksekse onu baz al
+                            hassasiyet = max(basamak_sayisi(ta_str), basamak_sayisi(te_str))
+                            
+                            # Eğer toleranslar tam sayı girilmişse varsayılan olarak kumpas hassasiyeti (2 basamak) kalsın
+                            if hassasiyet == 0: 
+                                hassasiyet = 2 
+
+                            n = float(n_str)
+                            ust = n + float(ta_str)
+                            e_s = te_str
+                            alt = n + float(e_s) if e_s.startswith('+') else n - float(e_s or 0)
+                            
+                            # Rastgele değeri üret ve dinamik hassasiyete göre formatla (örn: hassasiyet 3 ise 5.120 yazar)
+                            uretilen_deger = random.uniform(alt, ust)
+                            formatli_deger = f"{uretilen_deger:.{hassasiyet}f}"
+                            
+                            hucre_yaz(h[v_idx], formatli_deger)
+                        except: hucre_yaz(h[v_idx], "GO")
+                    hucre_yaz(h[r_idx], "OK")
+                elif v_idx < len(h):
+                    hucre_yaz(h[v_idx], ""); hucre_yaz(h[r_idx], "")
+
+        if numune_sayisi < 10:
+            for s in range(numune_sayisi, 10):
+                for cell in benzersiz_hucreler(tablo.rows[8+s]): hucre_yaz(cell, "")
+
+        # --- İNDİRME SİSTEMİ ---
+        final_out = BytesIO()
+        doc.save(final_out)
+        final_out.seek(0)
         
-        # Numune sıra numaralarını (1-10) yazdırıyoruz
-        for j in range(1, 11):
-            context[f"serino{j}"] = str(j) if j <= int(kontrol_miktari) else ""
+        st.success("✅ Form başarıyla oluşturuldu!")
+        st.download_button(
+            label="📥 Manuel Ölçü Formunu İndir",
+            data=final_out,
+            file_name=f"MANUEL_{m_no}_{tarih}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
 
-        # Sadece kullanıcının doldurduğu ölçüm noktalarını matrise yerleştiriyoruz
-        for i, girdi in panel_verileri.items():
-            context[f"balonno{i}"] = girdi["balon"]
-            context[f"nom{i}"] = girdi["nominal"]
-            context[f"tolarti{i}"] = girdi["tol_plus"]
-            context[f"toleksi{i}"] = girdi["tol_minus"]
-            context[f"cihaz{i}"] = girdi["cihaz"]
-            
-            # Kontrol miktarı kadar (en fazla 10 satır) rastgele değer üretimi
-            sinir_miktari = min(int(kontrol_miktari), 10)
-            for j in range(1, sinir_miktari + 1):
-                if girdi["is_master"]:
-                    context[f"o_{i}_{j}"] = "UYGUN"
-                    context[f"s_{i}_{j}"] = "UYGUN"
-                else:
-                    try:
-                        nom_f = float(girdi["nominal"])
-                        tp_f = float(girdi["tol_plus"]) if girdi["tol_plus"] else 0.0
-                        tm_f = float(girdi["tol_minus"]) if girdi["tol_minus"] else 0.0
-                        
-                        # Hassasiyet basamağını hesapla
-                        dec_places = max(
-                            len(str(girdi["nominal"]).split('.')[1]) if '.' in str(girdi["nominal"]) else 0,
-                            len(str(girdi["tol_plus"]).split('.')[1]) if '.' in str(girdi["tol_plus"]) else 0,
-                            len(str(girdi["tol_minus"]).split('.')[1]) if '.' in str(girdi["tol_minus"]) else 0
-                        )
-                        dec_places = max(dec_places, 2)
-                        
-                        rastgele_deger = random.uniform(nom_f - tm_f, nom_f + tp_f)
-                        context[f"o_{i}_{j}"] = f"{rastgele_deger:.{dec_places}f}"
-                        context[f"s_{i}_{j}"] = "UYGUN"
-                    except ValueError:
-                        context[f"o_{i}_{j}"] = girdi["nominal"]
-                        context[f"s_{i}_{j}"] = "UYGUN"
-
-        # Şablon adını kontrol edip yüklüyoruz
-        dosya_adi = "manuel.docx"
-        if os.path.exists(dosya_adi):
-            doc = DocxTemplate(dosya_adi)
-            doc.render(context)
-            
-            output = BytesIO()
-            doc.save(output)
-            output.seek(0)
-            
-            st.success("🎉 Rapor başarıyla dolduruldu!")
-            st.download_button(
-                label="📄 Raporu İndir (.docx)",
-                data=output,
-                file_name=f"Kalite_Kontrol_Raporu_{malzeme_no}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-        else:
-            st.error(f"Hata: GitHub deponuzda '{dosya_adi}' dosyası bulunamadı.")
-            
     except Exception as e:
-        st.error(f"Sistem Hatası: {e}")
+        st.error(f"Hata: {e}")
